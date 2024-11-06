@@ -3,6 +3,10 @@ Task completion interface for IMS maintenance checklists.
 
 This module provides a GUI for systematically completing maintenance tasks
 with user input validation and progress tracking.
+
+TODO:
+ISSUES:
+- When saving to Excel, preserve existing data and formatting, as well any input cell data if it exists and the new data is not a new month.
 """
 
 from tkinter import *
@@ -164,23 +168,10 @@ class TaskCompletionUI:
             )
             return
             
-        # Print task list to console
-        self._print_task_list()
-        
         # Start task completion
         self._show_task_interface()
 
-    def _print_task_list(self):
-        """Print the task list to the console."""
-        for sheet in self.data:
-            print(f"Sheet: {sheet['name']}")
-            for category in sheet['categories']:
-                print(f"  Category: {category['name']}")
-                for task in category['tasks']:
-                    print(f"    Task: {task['name']}")
-                    print(f"      Description: {task['description']}")
-                    print(f"      Inputs: {task['inputs']}")
-        
+      
     def _show_task_interface(self):
         """Display the task completion interface."""
         # Clear previous content
@@ -355,7 +346,6 @@ class TaskCompletionUI:
             if self._is_last_task():
                 self._complete_checklist()
                 return
-
             self._save_current_task()
             
             while True:
@@ -376,17 +366,18 @@ class TaskCompletionUI:
                         else:
                             self._complete_checklist()
                             return
-
+                
                 # Check if current task is a comment task
                 current_task = self._get_current_task()
                 if current_task and current_task['name'].lower().strip() != "comments:":
                     break
-                    
+
             self._show_task_interface()
                 
         except Exception as e:
             logger.error(f"Error navigating to next task: {e}")
             logger.debug(f"Current indices - Sheet: {self.current_sheet}, Category: {self.current_category}, Task: {self.current_task}")
+            logger.debug(f"Data lengths - Sheets: {len(self.data)}, Categories: {len(self.data[self.current_sheet]['categories'])}, Tasks: {len(self.data[self.current_sheet]['categories'][self.current_category]['tasks'])}")
             messagebox.showerror("Error", "Failed to move to next task")
         
     def _previous_task(self):
@@ -489,7 +480,7 @@ class TaskCompletionUI:
             )
 
     def _clear_previous_month_data(self, workbook):
-        """Clear all data from previous month in input cells, excluding rows 1 through 7."""
+        """Clear all data from previous month in input cells, excluding rows 1 through 8 and column A."""
         for worksheet in workbook.worksheets:
             # Get all input cell columns from first task's inputs
             input_columns = set()
@@ -497,26 +488,45 @@ class TaskCompletionUI:
                 for cell_ref in task['inputs'].keys():
                     input_columns.add(cell_ref[0])  # Get column letter
             
-            # Clear all cells in input columns, excluding rows 1 through 7
+            # Clear all cells in input columns, excluding rows 1 through 8 and column A
             for column in input_columns:
+                if column == 'A':
+                    continue  # Skip column A
                 col_idx = openpyxl.utils.column_index_from_string(column)
-                for row in range(8, worksheet.max_row + 1):  # Start from row 8
+                for row in range(9, worksheet.max_row + 1):  # Start from row 9
+                    if row < 1 or col_idx < 1:
+                        continue  # Skip invalid rows or columns
                     cell = worksheet.cell(row=row, column=col_idx)
                     if not isinstance(cell, openpyxl.cell.cell.MergedCell):
                         cell.value = None
+
     def _preserve_header(self, source_ws, target_ws):
         """
-        Preserve rows 1 through 7 and columns A through O from the source worksheet
-        and transfer them to the target worksheet.
+        Preserve rows 1 through 8 and columns A through O from the source worksheet
+        and transfer them to the target worksheet, including formatting and merged cells.
         
         Args:
             source_ws: Source worksheet to copy from
             target_ws: Target worksheet to copy to
         """
-        for row in range(1, 8):  # Rows 1 through 7
+        for row in range(1, 9):  # Rows 1 through 8
             for col in range(1, 16):  # Columns A through O (1 through 15)
-                cell_value = source_ws.cell(row=row, column=col).value
-                target_ws.cell(row=row, column=col, value=cell_value)
+                source_cell = source_ws.cell(row=row, column=col)
+                target_cell = target_ws.cell(row=row, column=col, value=source_cell.value)
+                
+                # Copy cell styles
+                if source_cell.has_style:
+                    target_cell.font = source_cell.font.copy()
+                    target_cell.border = source_cell.border.copy()
+                    target_cell.fill = source_cell.fill.copy()
+                    target_cell.number_format = source_cell.number_format
+                    target_cell.protection = source_cell.protection.copy()
+                    target_cell.alignment = source_cell.alignment.copy()
+
+        # Copy merged cells
+        for merge_range in source_ws.merged_cells.ranges:
+            if merge_range.min_row <= 8 and merge_range.min_col <= 15:
+                target_ws.merge_cells(str(merge_range))
 
     def _save_to_excel(self):
         """Save data back to Excel file with proper month transition handling."""
@@ -538,23 +548,22 @@ class TaskCompletionUI:
             # Load workbook
             wb = openpyxl.load_workbook(xlsx_path)
             
-            # Check for month transition
+            # Only clear data if month has changed
             if old_month != self.selected_month.get().upper():
-                # Clear all previous month data
                 self._clear_previous_month_data(wb)
                 
-            # Write new data to first available cells
+            # Write new data to worksheets
             for sheet_data in self.data:
                 sheet_index = int(sheet_data['name'].split()[-1]) - 1
                 if 0 <= sheet_index < len(wb.worksheets):
                     ws = wb.worksheets[sheet_index]
-                    self._write_new_month_data(ws, sheet_data)
-                    
-            # Preserve header rows and columns
-            for ws in wb.worksheets:
-                new_ws = wb.create_sheet(title=f"{ws.title}_new")
-                self._preserve_header(ws, new_ws)
-            
+                    if old_month == self.selected_month.get().upper():
+                        # Same month - find next empty columns
+                        self._write_same_month_data(ws, sheet_data)
+                    else:
+                        # New month - write to first columns
+                        self._write_new_month_data(ws, sheet_data)
+                                
             # Save and cleanup
             wb.save(str(new_path))
             self.json_path.unlink()  # Delete JSON file
@@ -635,20 +644,6 @@ class TaskCompletionUI:
             logger.error(f"Error getting unmerged cell {cell_ref}: {e}")
             return None
 
-    def _clear_all_input_cells(self, workbook):
-        """Clear all input cells in workbook."""
-        for worksheet in workbook.worksheets:
-            for row in worksheet.iter_rows():
-                for cell in row:
-                    if isinstance(cell, openpyxl.cell.cell.MergedCell):
-                        continue
-                        
-                    # Clear cell if it's in an input column
-                    col_letter = openpyxl.utils.get_column_letter(cell.column)
-                    if any(col_letter == ref[0] for task in self.data[0]['categories'][0]['tasks'] 
-                          for ref in task['inputs'].keys()):
-                        cell.value = None
-
     def _update_existing_month_data(self, worksheet, sheet_data):
         """
         Update data in existing month's spreadsheet.
@@ -675,29 +670,47 @@ class TaskCompletionUI:
                     except Exception as e:
                         logger.error(f"Error writing to cell {cell_ref}: {e}")
 
-    def _clear_input_cells(self, workbook):
-        """
-        Clear all input cells in workbook for new month.
+    def _find_next_empty_columns(self, worksheet, task):
+        """Find next two empty columns for the task."""
+        input_cells = sorted(task['inputs'].keys())
+        empty_columns = []
         
-        Args:
-            workbook: openpyxl Workbook object to clear
-        """
+        for cell_ref in input_cells:
+            cell = self._get_unmerged_cell(worksheet, cell_ref)
+            if cell and not cell.value:
+                empty_columns.append(cell_ref)
+                if len(empty_columns) == 2:
+                    return empty_columns
+                    
+        return empty_columns if empty_columns else input_cells[:2]
+
+    def _write_same_month_data(self, worksheet, sheet_data):
+        """Write data to next empty columns when in same month."""
         try:
-            for worksheet in workbook.worksheets:
-                for row in worksheet.iter_rows():
-                    for cell in row:
-                        # Skip merged cells
-                        if isinstance(cell, openpyxl.cell.cell.MergedCell):
-                            continue
-                            
-                        # Clear cell if it's in an input column
-                        col_letter = openpyxl.utils.get_column_letter(cell.column)
-                        if any(col_letter == ref[0] for task in self.data[0]['categories'][0]['tasks'] 
-                              for ref in task['inputs'].keys()):
-                            cell.value = None
+            for category in sheet_data['categories']:
+                for task in category['tasks']:
+                    # Skip comment tasks
+                    if task['name'].lower().strip() == "comments:":
+                        continue
+                        
+                    # Find next two empty columns
+                    empty_cells = self._find_next_empty_columns(worksheet, task)
+                    if len(empty_cells) >= 2:
+                        # Write to first empty cell (date and initials)
+                        cell = self._get_unmerged_cell(worksheet, empty_cells[0])
+                        if cell:
+                            cell.value = (f"{self.initials.get().upper()} "
+                                        f"{self.selected_day.get()} "
+                                        f"{self.selected_month.get().upper()} "
+                                        f"{self.selected_year.get()[2:]}")
+                        
+                        # Write to second empty cell (status)
+                        cell = self._get_unmerged_cell(worksheet, empty_cells[1])
+                        if cell:
+                            cell.value = self.task_status.get().upper()
                             
         except Exception as e:
-            logger.error(f"Error clearing input cells: {e}")
+            logger.error(f"Error writing same month data: {e}")
             raise
 
     def _load_and_validate_data(self, json_path: Path) -> List[Dict]:
