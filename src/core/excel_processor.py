@@ -70,7 +70,7 @@ class ExcelProcessor:
                 
             cell_value = str(first_cell.value).strip()
             
-            # Category detection (yellow background and bold)
+            # Category detection
             if (first_cell.fill.start_color.index == CATEGORY_COLOR and 
                 first_cell.font.bold):
                 if current_category:
@@ -80,11 +80,15 @@ class ExcelProcessor:
             # Task detection (bold text)
             elif first_cell.font.bold:
                 if current_category:
-                    task = Task(
-                        name=cell_value,
-                        inputs=self._get_input_values(row)
-                    )
-                    current_category.tasks.append(task)
+                    inputs = self._get_input_values(row)
+                    # Only add task if no yellow cells found
+                    if inputs is not None:
+                        task = Task(
+                            name=cell_value,
+                            description="",
+                            inputs=inputs
+                        )
+                        current_category.tasks.append(task)
             
             # Description detection (non-bold text)
             elif not first_cell.font.bold and current_category and current_category.tasks:
@@ -111,13 +115,28 @@ class ExcelProcessor:
         return sorted(set(input_cols))
 
     def _get_input_values(self, row) -> Dict[str, str]:
-        """Extract input values from specified columns (excluding column A)."""
+        """Extract input values from specified columns (excluding column A and handling yellow cells)."""
         inputs = {}
+        yellow_cell_found = False
+        
         for col in self._input_cols:
             cell = row[col - 1]  # Convert to 0-based index
-            coord = f"{openpyxl.utils.get_column_letter(cell.column)}{cell.row}"
-            inputs[coord] = str(cell.value) if cell.value else DEFAULT_VALUE
-        return inputs
+            
+            # Check for yellow background (CATEGORY_COLOR)
+            if cell.fill.start_color.index == CATEGORY_COLOR:
+                # Mark cell as "Out of Service"
+                coord = f"{openpyxl.utils.get_column_letter(cell.column)}{cell.row}"
+                inputs[coord] = "Out of Service"
+                yellow_cell_found = True
+                continue
+                
+            # Only add non-yellow cells if no yellow cells found
+            if not yellow_cell_found:
+                coord = f"{openpyxl.utils.get_column_letter(cell.column)}{cell.row}"
+                inputs[coord] = str(cell.value) if cell.value else DEFAULT_VALUE
+                
+        # Return None if any yellow cells found to indicate task should be removed
+        return None if yellow_cell_found else inputs
 
 def save_to_json(data: List[SheetData], output_path: Path) -> None:
     """Save the given data to a JSON file."""
